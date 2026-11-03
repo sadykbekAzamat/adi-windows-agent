@@ -16,52 +16,52 @@ function parseArgs(argv) {
   return out;
 }
 
+/*
+ * Вопросы в консоли — через одну readline на весь процесс. Отдельная readline
+ * на каждый вопрос на Windows ломала следующий: после close() ввод пароля
+ * терялся, и setup завершался молча. Пароль — та же readline с заглушённым
+ * выводом (звёздочки).
+ */
+let rl = null;
+
+function prompts() {
+  if (rl) return rl;
+  rl = readline.createInterface({ input: process.stdin, output: process.stdout, terminal: Boolean(process.stdin.isTTY) });
+  rl.on("SIGINT", () => {
+    process.stdout.write("\n");
+    process.exit(130);
+  });
+  const write = rl._writeToOutput.bind(rl);
+  rl._writeToOutput = (s) => {
+    if (!rl.muted) return write(s);
+    if (/[\r\n]/.test(s)) return write("\n");
+    if (s.length === 1) return write("*");
+  };
+  return rl;
+}
+
 function ask(question, def) {
   return new Promise((resolve) => {
-    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-    rl.question(def ? `${question} [${def}]: ` : `${question}: `, (a) => {
-      rl.close();
-      resolve(a.trim() || def || "");
-    });
+    prompts().question(def ? `${question} [${def}]: ` : `${question}: `, (a) => resolve(a.trim() || def || ""));
   });
 }
 
-// Пароль со звёздочками. Без терминала (перенаправлен ввод) — читаем строку.
 function askHidden(question) {
-  const stdin = process.stdin;
-  if (!stdin.isTTY) return ask(question);
+  if (!process.stdin.isTTY) return ask(question);
+  const r = prompts();
   return new Promise((resolve) => {
-    process.stdout.write(`${question}: `);
-    let value = "";
-    stdin.setRawMode(true);
-    stdin.resume();
-    stdin.setEncoding("utf8");
-    const onData = (chunk) => {
-      for (const ch of chunk) {
-        if (ch === "\r" || ch === "\n") {
-          stdin.setRawMode(false);
-          stdin.pause();
-          stdin.removeListener("data", onData);
-          process.stdout.write("\n");
-          return resolve(value);
-        }
-        if (ch === "\u0003") {
-          process.stdout.write("\n");
-          process.exit(130);
-        }
-        if (ch === "\u007f" || ch === "\b") {
-          if (value) {
-            value = value.slice(0, -1);
-            process.stdout.write("\b \b");
-          }
-        } else {
-          value += ch;
-          process.stdout.write("*");
-        }
-      }
-    };
-    stdin.on("data", onData);
+    r.question(`${question}: `, (a) => {
+      r.muted = false;
+      resolve(a);
+    });
+    r.muted = true;
   });
+}
+
+// Закрыть консольный ввод, иначе процесс не завершится.
+function closePrompts() {
+  rl?.close();
+  rl = null;
 }
 
 // Один агент на компьютер: два открывали бы дверь дважды и делили поток событий.
@@ -91,4 +91,4 @@ function acquireLock(file) {
   });
 }
 
-module.exports = { parseArgs, ask, askHidden, acquireLock };
+module.exports = { parseArgs, ask, askHidden, closePrompts, acquireLock };

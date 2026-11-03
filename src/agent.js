@@ -26,6 +26,7 @@ const COMMANDS = {
   door: (t, a) => t.doorCommand(a.cmd),
   userCount: (t) => t.userCount(),
   userGet: (t, a) => t.userGet(a.employeeNo),
+  userList: (t) => t.userList(),
   userUpsert: (t, a) => t.userUpsert(a),
   userDelete: (t, a) => t.userDelete(a.employeeNos ?? a.employeeNo),
   faceUpload: (t, a) => t.faceUpload(a.employeeNo, Buffer.from(String(a.imageBase64 || ""), "base64")),
@@ -124,6 +125,7 @@ class Agent {
     const mode = this.decision.mode;
 
     if (mode === "terminal") {
+      this.log.info(`${who(ev)}: ${terminalVerdict(ev)}`);
       this.link.report({ kind: ev.minor === FACE_PASS ? "access.passed" : "access.refused", ...person });
       return;
     }
@@ -141,7 +143,8 @@ class Agent {
         const opened = await this.open(ev, `без ADI: ${err.message}`);
         this.link.report({ kind: "access.offline", ...person, opened });
       } else {
-        this.log.warn(`${who(ev)}: не пустили — ${err.message}`);
+        // Агент дверь не открывал. Пустил ли терминал сам — видно по minor.
+        this.log.warn(`${who(ev)}: ${terminalVerdict(ev)}; ADI недоступен (${err.message}) — агент дверь не открывал`);
         this.link.report({ kind: "access.offline_denied", ...person, reason: err.message });
       }
       return;
@@ -184,5 +187,7 @@ class Agent {
 }
 
 const who = (ev) => `${ev.name || "?"} (${ev.employeeNo}) у ${ev.terminalId}`;
+const terminalVerdict = (ev) =>
+  ev.minor === FACE_PASS ? "терминал пропустил сам" : `терминал не пропустил (код ${ev.minor})`;
 
 module.exports = { Agent, COMMANDS, DOOR_COMMANDS };

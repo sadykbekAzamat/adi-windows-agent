@@ -180,6 +180,40 @@ class Terminal {
     };
   }
 
+  /*
+   * Все люди терминала — постранично по 30 (больше терминал не отдаёт), с
+   * одним searchID на весь обход. Нужно, чтобы связать уже внесённых в
+   * терминал людей (у них свои номера) с клиентами ADI.
+   */
+  async userList({ onPage } = {}) {
+    const searchID = crypto.randomUUID();
+    const out = [];
+    for (let pos = 0; ; ) {
+      const res = await this.req("POST", "/ISAPI/AccessControl/UserInfo/Search?format=json", {
+        body: JSON.stringify({ UserInfoSearchCond: { searchID, searchResultPosition: pos, maxResults: 30 } }),
+        contentType: "application/json",
+      });
+      const s = ensureOk(res, "Список людей");
+      const r = s.json?.UserInfoSearch || {};
+      const page = Array.isArray(r.UserInfo) ? r.UserInfo : [];
+      for (const u of page)
+        out.push({
+          employeeNo: String(u.employeeNo),
+          name: u.name || "",
+          userType: u.userType || null,
+          validFrom: u.Valid?.beginTime || null,
+          validTo: u.Valid?.endTime || null,
+          validEnabled: u.Valid?.enable ?? null,
+          faces: num(u.numOfFace),
+          cards: num(u.numOfCard),
+        });
+      onPage?.(out.length, num(r.totalMatches));
+      if (!page.length || r.responseStatusStrg !== "MORE") break;
+      pos += page.length;
+    }
+    return out;
+  }
+
   // По 30 за раз — столько принимает терминал.
   async userDelete(employeeNos) {
     const list = [...new Set((Array.isArray(employeeNos) ? employeeNos : [employeeNos]).map(checkEmployeeNo))];

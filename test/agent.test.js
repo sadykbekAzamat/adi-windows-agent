@@ -349,3 +349,43 @@ test("push: событие принимается только с IP терми�
     await term.close();
   }
 });
+
+test("выгрузка всех людей терминала постранично (по 30)", async () => {
+  const term = createFakeTerminal();
+  const port = await term.listen();
+  try {
+    const t = new Terminal({ id: "e", host: "127.0.0.1", port, user: "admin", password: "secret" });
+    for (let i = 1; i <= 71; i += 1) await t.userUpsert({ employeeNo: String(i), name: `Клиент ${i}` });
+    await t.faceUpload("7", term.JPEG);
+    const pages = [];
+    const list = await t.userList({ onPage: (n, total) => pages.push([n, total]) });
+    assert.equal(list.length, 71);
+    assert.equal(new Set(list.map((u) => u.employeeNo)).size, 71, "без повторов");
+    assert.deepEqual(pages, [[30, 71], [60, 71], [71, 71]]);
+    assert.equal(list.find((u) => u.employeeNo === "7").faces, 1);
+    assert.equal(list.find((u) => u.employeeNo === "8").faces, 0);
+  } finally {
+    await term.close();
+  }
+});
+
+test("журнал: новый файл начинается с BOM (иначе PowerShell 5.1 покажет кракозябры)", () => {
+  const dir = tmp();
+  const log = require("../src/log");
+  const origLog = console.log;
+  console.log = () => {};
+  try {
+    log.init(dir);
+    log.info("Проверка русского текста");
+    log.info("вторая строка");
+  } finally {
+    console.log = origLog;
+  }
+  const file = fs.readdirSync(dir).find((f) => f.startsWith("agent-"));
+  const buf = fs.readFileSync(path.join(dir, file));
+  assert.deepEqual([...buf.subarray(0, 3)], [0xef, 0xbb, 0xbf]);
+  const text = buf.toString("utf8");
+  assert.equal(text.split("\ufeff").length, 2, "BOM только один раз");
+  assert.match(text, /Проверка русского текста/);
+  log.init(null);
+});

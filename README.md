@@ -40,6 +40,14 @@
 - Журнал — `C:\ProgramData\ADI\gate-agent\logs\agent-ГГГГ-ММ-ДД.log`, хранится 14 дней.
 - События, ещё не доставленные в ADI, — `outbox.jsonl` в той же папке.
 
+**Смотреть журнал вживую:**
+
+```powershell
+Get-Content "C:\ProgramData\ADI\gate-agent\logs\agent-$(Get-Date -Format yyyy-MM-dd).log" -Wait -Encoding UTF8
+```
+
+**Обновить агент:** скачать новую версию (GitHub → Code → Download ZIP), распаковать и в PowerShell от администратора снова выполнить `scripts\install.ps1` из новой папки. Скрипт остановит агент, заменит файлы и запустит снова. Настройки и пароль сохраняются.
+
 **Перезапустить** после изменения настроек:
 
 ```powershell
@@ -66,6 +74,7 @@ powercfg /change standby-timeout-ac 0
 | `check` | Модель, прошивка, возможности (удалённая проверка, снимок лица), сколько людей в терминале |
 | `door open` / `door close` | Открыть или закрыть турникет. Ещё есть `alwaysOpen`, `alwaysClose`, `resume` |
 | `events` | Показывать события проходов вживую. Подойдите к терминалу — увидите `employeeNo`, `major` и `minor` |
+| `users export люди.json` | Все люди терминала: номер, имя, срок, есть ли лицо. Для сверки с клиентами ADI |
 | `user add <id> --name "Имя" --to 2026-11-30` | Добавить человека со сроком |
 | `user get <id>` / `user del <id>` | Найти или удалить человека |
 | `face capture face.jpg` | Снять лицо камерой терминала |
@@ -163,6 +172,7 @@ JSON-сообщения по WebSocket `adi.url` (по умолчанию `wss:/
 | Команда | Аргументы |
 |---|---|
 | `deviceInfo` | — |
+| `userList` | — → `[{employeeNo, name, validFrom, validTo, faces, cards}]` |
 | `capabilities` | — |
 | `door` | `{cmd}` |
 | `userCount` | — |
@@ -173,7 +183,7 @@ JSON-сообщения по WebSocket `adi.url` (по умолчанию `wss:/
 | `faceDelete` | `{employeeNo}` |
 | `faceCapture` | `{timeoutMs?}` → `{imageBase64}` |
 
-`employeeNo` — id пользователя ADI (до 32 символов).
+`employeeNo` — номер человека в терминале (до 32 символов). У людей, внесённых в терминал до ADI, номера свои (например, `135`). Поэтому ADI хранит соответствие «номер в терминале → клиент ADI» и не считает `employeeNo` id пользователя. Новым людям ADI даёт номер сам.
 
 **Привязка:** `POST {base}/api/gate/agent/pair` с телом `{code, hostname, version}` → `{token, wsUrl?, companyName?}`.
 

@@ -14,6 +14,7 @@ const day = () => stamp().slice(0, 10);
 
 function init(logDir) {
   dir = logDir;
+  if (!dir) return;
   try {
     fs.mkdirSync(dir, { recursive: true });
     const cutoff = Date.now() - KEEP_DAYS * 86400000;
@@ -31,7 +32,11 @@ function write(level, msg, extra) {
   (level === "ERROR" || level === "WARN" ? console.error : console.log)(line);
   if (!dir) return;
   try {
-    fs.appendFileSync(path.join(dir, `agent-${day()}.log`), `${line}\n`);
+    const file = path.join(dir, `agent-${day()}.log`);
+    // BOM в начале нового файла: без него Get-Content в Windows PowerShell
+    // читает UTF-8 как cp1251, и русский текст превращается в «Р Р°Р±…».
+    if (!fs.existsSync(file)) fs.writeFileSync(file, "\ufeff");
+    fs.appendFileSync(file, `${line}\n`);
   } catch {
     /* диск полон или нет прав — консоль всё равно есть */
   }

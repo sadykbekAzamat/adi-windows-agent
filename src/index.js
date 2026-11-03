@@ -9,7 +9,7 @@ const { Terminal, DOOR_COMMANDS } = require("./isapi");
 const { AuthError, BlockedError } = require("./http");
 const { MultipartStream } = require("./multipart");
 const { normalizeEvent } = require("./isapi");
-const { parseArgs, ask, askHidden, acquireLock } = require("./cli-util");
+const { parseArgs, ask, askHidden, closePrompts, acquireLock } = require("./cli-util");
 const { version } = require("../package.json");
 
 const HELP = `ADI Gate Agent ${version} — агент турникета
@@ -27,6 +27,7 @@ const HELP = `ADI Gate Agent ${version} — агент турникета
   check                модель, прошивка, возможности, сколько людей
   door <${DOOR_COMMANDS.join("|")}>
   events [--raw]       показывать события проходов (Ctrl+C — выход)
+  users export [файл.json]  все люди терминала: номер, имя, срок, есть ли лицо
   user add <employeeNo> --name "Имя" [--from 2026-11-01] [--to 2026-11-30]
   user get <employeeNo> | user del <employeeNo>
   face upload <employeeNo> <фото.jpg> | face capture <куда.jpg> | face del <employeeNo>
@@ -175,6 +176,20 @@ async function user(args) {
   else throw new Error("user add|get|del|count");
 }
 
+// Все люди из терминала в JSON — для сверки с клиентами ADI.
+async function users(args) {
+  if (args._[1] !== "export") throw new Error("users export <файл.json>");
+  const file = args._[2] || "terminal-users.json";
+  const t = terminalFrom(config.load(), args);
+  const list = await t.userList({
+    onPage: (n, total) => process.stdout.write(`\rПрочитано ${n}${total ? ` из ${total}` : ""}…`),
+  });
+  process.stdout.write("\n");
+  fs.writeFileSync(file, JSON.stringify(list, null, 2));
+  const withFace = list.filter((u) => u.faces > 0).length;
+  console.log(`Сохранено ${list.length} человек (с лицом: ${withFace}) → ${file}`);
+}
+
 async function face(args) {
   const [, sub, a1, a2] = args._;
   const t = terminalFrom(config.load(), args);
@@ -253,8 +268,17 @@ function worker() {
     process.exit(1);
   });
   process.on("unhandledRejection", (err) => log.error(`Сбой: ${err?.stack || err}`));
+  // Терминал ещё не настроен (служба запущена до setup) — ждём, а не падаем:
+  // иначе главный процесс перезапускал бы нас в цикле без объяснений.
+  const cfg = config.load();
+  if (!cfg.terminals.length) {
+    log.warn("Терминал не настроен — жду «adi-gate setup», проверю снова через 30 с");
+    setTimeout(() => process.exit(0), 30000);
+    process.on("disconnect", () => process.exit(0));
+    return;
+  }
   const { Agent } = require("./agent");
-  const agent = new Agent(config.load(), { log, outboxFile: p.outbox });
+  const agent = new Agent(cfg, { log, outboxFile: p.outbox });
   agent.start();
   // Главный процесс убит (Windows снимает задачу жёстко) — уходим вслед, иначе
   // после перезапуска работали бы два агента и дверь открывалась бы дважды.
@@ -273,7 +297,7 @@ function worker() {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const cmd = args._[0];
-  const table = { setup, pair, mode: setMode, status, check, events, user, face, push };
+  const table = { setup, pair, mode: setMode, status, check, events, user, users, face, push };
   if (cmd === "run") return run();
   if (cmd === "worker") return worker();
   if (!cmd || cmd === "help" || args.help) return console.log(HELP);
@@ -290,9 +314,14 @@ async function main() {
 }
 
 if (require.main === module)
-  main().catch((err) => {
-    console.error(`Ошибка: ${explain(err)}`);
-    process.exit(1);
-  });
+  main()
+    .then(() => closePrompts())
+    .catch((err) => {
+      closePrompts();
+      // Ошибка рабочего процесса службы — в журнал: консоли у службы нет.
+      if (process.argv[2] === "worker") log.error(`Рабочий процесс не запустился: ${explain(err)}`);
+      console.error(`Ошибка: ${explain(err)}`);
+      process.exit(1);
+    });
 
 module.exports = { main };

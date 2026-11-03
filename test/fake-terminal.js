@@ -96,7 +96,15 @@ function createFakeTerminal({ user = "admin", password = "secret" } = {}) {
     if (req.method === "GET" && p === "/ISAPI/AccessControl/UserInfo/Count")
       return send(res, 200, JSON.stringify({ UserInfoCount: { userNumber: state.users.size } }), "application/json");
     if (req.method === "POST" && p === "/ISAPI/AccessControl/UserInfo/Search") {
-      const no = JSON.parse(text).UserInfoSearchCond.EmployeeNoList[0].employeeNo;
+      const cond = JSON.parse(text).UserInfoSearchCond;
+      if (!cond.EmployeeNoList) {
+        // Постранично, не больше 30 за раз — как настоящий терминал.
+        const all = [...state.users.values()];
+        const page = all.slice(cond.searchResultPosition, cond.searchResultPosition + Math.min(30, cond.maxResults));
+        const more = cond.searchResultPosition + page.length < all.length;
+        return send(res, 200, JSON.stringify({ UserInfoSearch: { searchID: cond.searchID, responseStatusStrg: page.length ? (more ? "MORE" : "OK") : "NO MATCH", numOfMatches: page.length, totalMatches: all.length, UserInfo: page.map((u) => ({ ...u, numOfFace: state.faces.has(u.employeeNo) ? 1 : 0, numOfCard: 0 })) } }), "application/json");
+      }
+      const no = cond.EmployeeNoList[0].employeeNo;
       const u = state.users.get(no);
       return send(res, 200, JSON.stringify({ UserInfoSearch: { responseStatusStrg: "OK", numOfMatches: u ? 1 : 0, UserInfo: u ? [{ ...u, numOfFace: state.faces.has(no) ? 1 : 0 }] : [] } }), "application/json");
     }
