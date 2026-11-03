@@ -10,8 +10,15 @@ const crypto = require("crypto");
  * без защиты выбрал бы лимит за секунды. Поэтому: не больше двух неверных
  * попыток (старый nonce + свежий), потом запросы к терминалу не идут
  * BLOCK_MS — до исправления пароля.
+ *
+ * Nonce терминала живёт недолго и, похоже, привязан к соединению: старый
+ * (например, от потока событий) терминал отвергает 401 без нового вызова.
+ * Поэтому сохранённый nonce берём только пока он свежий (CHALLENGE_TTL_MS), а
+ * на 401 без вызова — как curl: запрос без авторизации за новым nonce. Такой
+ * запрос — не неверный пароль и к блокировке не ведёт.
  */
 const BLOCK_MS = 30 * 60 * 1000;
+const CHALLENGE_TTL_MS = 20 * 1000;
 
 class AuthError extends Error {
   constructor(message) {
@@ -36,6 +43,17 @@ function parseChallenge(header) {
   let m;
   while ((m = re.exec(header || ""))) out[m[1].toLowerCase()] = m[2] ?? m[3];
   return out;
+}
+
+// Вызов Digest из WWW-Authenticate. Node склеивает повторные заголовки через
+// запятую, поэтому рядом может оказаться Basic — берём только часть Digest.
+function digestChallenge(header) {
+  const h = String(header || "");
+  const i = h.search(/(^|[\s,])digest\s/i);
+  if (i < 0) return null;
+  const rest = h.slice(h.toLowerCase().indexOf("digest", i) + 6).split(/,\s*(?=(?:basic|bearer|negotiate)\b)/i)[0];
+  const ch = parseChallenge(rest);
+  return ch.nonce ? ch : null;
 }
 
 // Самоподписанный сертификат терминала — это нормально (rejectUnauthorized: false).
@@ -85,6 +103,7 @@ class DigestClient {
     this.password = password;
     this.timeoutMs = timeoutMs;
     this.challenge = null;
+    this.challengeAt = 0;
     this.nc = 0;
     this.blockedUntil = 0;
     this.blockReason = null;
@@ -115,6 +134,7 @@ class DigestClient {
 
   send(method, uri, { body, contentType, timeoutMs, stream, accept }) {
     const headers = {};
+    if (this.challenge && Date.now() - this.challengeAt > CHALLENGE_TTL_MS) this.challenge = null;
     if (this.challenge) headers.Authorization = this.authorization(method, uri);
     if (accept) headers.Accept = accept;
     if (body != null) {
@@ -142,12 +162,25 @@ class DigestClient {
   async request(method, uri, opts = {}) {
     if (Date.now() < this.blockedUntil)
       throw new BlockedError(this.blockReason || "Запросы к терминалу приостановлены", this.blockedUntil);
+    const usedCached = Boolean(this.challenge);
     let res = await this.send(method, uri, opts);
+    if (res.status === 401 && usedCached && !digestChallenge(res.headers["www-authenticate"])) {
+      // Старый nonce не принят, новый не прислан — спрашиваем заново.
+      this.challenge = null;
+      res = await this.send(method, uri, opts);
+    }
     if (res.status === 401) {
-      const ch = parseChallenge(res.headers["www-authenticate"]);
-      if (!ch.nonce || !/^digest/i.test(res.headers["www-authenticate"] || ""))
-        throw new AuthError("Терминал не предложил Digest-авторизацию");
+      const ch = digestChallenge(res.headers["www-authenticate"]);
+      if (!ch) {
+        this.checkLocked(res);
+        if (Date.now() < this.blockedUntil) throw new BlockedError(this.blockReason, this.blockedUntil);
+        const h = res.headers["www-authenticate"];
+        throw new AuthError(
+          `Терминал не предложил Digest-авторизацию (HTTP 401, WWW-Authenticate: ${h ? String(h).slice(0, 80) : "нет"})`,
+        );
+      }
       this.challenge = ch;
+      this.challengeAt = Date.now();
       this.nc = 0;
       res = await this.send(method, uri, opts);
       if (res.status === 401) {
@@ -157,8 +190,9 @@ class DigestClient {
         throw new AuthError("Неверный логин или пароль терминала");
       }
     }
+    if (this.challenge && res.status !== 401) this.challengeAt = Date.now();
     return res;
   }
 }
 
-module.exports = { DigestClient, AuthError, BlockedError, parseChallenge, rawRequest };
+module.exports = { DigestClient, AuthError, BlockedError, parseChallenge, digestChallenge, rawRequest, CHALLENGE_TTL_MS };

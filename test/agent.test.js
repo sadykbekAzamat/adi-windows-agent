@@ -7,7 +7,7 @@ const http = require("http");
 const { createFakeTerminal } = require("./fake-terminal");
 const { createFakeAdi } = require("./fake-adi");
 const { Terminal } = require("../src/isapi");
-const { AuthError, BlockedError } = require("../src/http");
+const { AuthError, BlockedError, digestChallenge, CHALLENGE_TTL_MS } = require("../src/http");
 const { Agent } = require("../src/agent");
 const { DEFAULTS } = require("../src/config");
 
@@ -67,6 +67,40 @@ test("неверный пароль: не больше одной неудачн
   } finally {
     await term.close();
   }
+});
+
+test("старый nonce: терминал отверг его без нового вызова — агент берёт свежий, пароль не «неверный»", async () => {
+  const term = createFakeTerminal({ strictNonce: true });
+  const port = await term.listen();
+  try {
+    const t = new Terminal({ id: "e", host: "127.0.0.1", port, user: "admin", password: "secret" });
+    await t.deviceInfo();
+    // Nonce протух (или был от другого соединения — поток событий).
+    term.expireNonces();
+    await t.doorCommand("open");
+    assert.deepEqual(term.state.opens, ["open"]);
+    assert.equal(term.state.staleNonces, 1);
+    // Сохранённый nonce давно не использовался — сразу за новым, без отказа.
+    t.client.challengeAt -= CHALLENGE_TTL_MS + 1000;
+    term.expireNonces();
+    await t.doorCommand("open");
+    assert.equal(term.state.opens.length, 2);
+    assert.equal(term.state.staleNonces, 1);
+    assert.equal(term.state.authFailures, 0);
+    assert.equal(t.client.blockedUntil, 0, "клиент не заблокирован");
+  } finally {
+    await term.close();
+  }
+});
+
+test("WWW-Authenticate: Digest находится и рядом с Basic", () => {
+  assert.equal(digestChallenge('Digest qop="auth", realm="R", nonce="n1", stale="FALSE"').nonce, "n1");
+  const both = digestChallenge('Basic realm="B", Digest qop="auth", realm="R", nonce="n2"');
+  assert.equal(both.nonce, "n2");
+  assert.equal(both.realm, "R");
+  assert.equal(digestChallenge('Digest realm="R", nonce="n3", Basic realm="B"').realm, "R");
+  assert.equal(digestChallenge('Basic realm="B"'), null);
+  assert.equal(digestChallenge(undefined), null);
 });
 
 test("дверь: команда уходит XML (как принимает V3.2.30), лишние команды запрещены", async () => {

@@ -15,7 +15,12 @@ const jsonOk = JSON.stringify({ statusCode: 1, statusString: "OK", subStatusCode
 const jsonErr = (sub) => JSON.stringify({ statusCode: 6, statusString: "Invalid Content", subStatusCode: sub, errorMsg: sub });
 const JPEG = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), crypto.randomBytes(2000), Buffer.from([0xff, 0xd9])]);
 
-function createFakeTerminal({ user = "admin", password = "secret" } = {}) {
+/*
+ * strictNonce — как настоящий терминал: nonce выдан на соединение и живёт
+ * недолго; чужой или протухший — 401 без нового вызова (WWW-Authenticate нет).
+ */
+function createFakeTerminal({ user = "admin", password = "secret", strictNonce = false } = {}) {
+  const nonces = new Set();
   const state = {
     opens: [],
     users: new Map(),
@@ -35,6 +40,7 @@ function createFakeTerminal({ user = "admin", password = "secret" } = {}) {
     const ha1 = md5(`${p.username}:${REALM}:${password}`);
     const ha2 = md5(`${req.method}:${p.uri}`);
     const expect = md5(`${ha1}:${p.nonce}:${p.nc}:${p.cnonce}:${p.qop}:${ha2}`);
+    if (strictNonce && !nonces.has(p.nonce)) return "stale";
     if (p.username === user && p.response === expect) return true;
     state.authFailures += 1;
     return false;
@@ -51,9 +57,17 @@ function createFakeTerminal({ user = "admin", password = "secret" } = {}) {
     req.on("end", () => {
       const body = Buffer.concat(chunks);
       state.requests.push(`${req.method} ${req.url}`);
-      if (!authorized(req)) {
+      const auth = authorized(req);
+      if (auth === "stale") {
+        state.staleNonces = (state.staleNonces || 0) + 1;
+        res.writeHead(401, { "Content-Type": "application/xml" });
+        return res.end(xmlErr(4, "unauthorized"));
+      }
+      if (!auth) {
+        const nonce = crypto.randomBytes(8).toString("hex");
+        nonces.add(nonce);
         res.writeHead(401, {
-          "WWW-Authenticate": `Digest qop="auth", realm="${REALM}", nonce="${crypto.randomBytes(8).toString("hex")}", stale="FALSE"`,
+          "WWW-Authenticate": `Digest qop="auth", realm="${REALM}", nonce="${nonce}", stale="FALSE"`,
           "Content-Type": "application/xml",
         });
         return res.end(xmlErr(4, "unauthorized"));
@@ -204,6 +218,7 @@ function createFakeTerminal({ user = "admin", password = "secret" } = {}) {
     eventJson,
     heartbeat,
     dropStreams,
+    expireNonces: () => nonces.clear(),
     listen: () => new Promise((r) => server.listen(0, "127.0.0.1", () => r(server.address().port))),
     close: () => {
       dropStreams();
