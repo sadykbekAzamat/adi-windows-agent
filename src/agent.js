@@ -19,6 +19,21 @@ const { version } = require("../package.json");
  * терминалу через агента не пройдёт.
  */
 const SEEN_MAX = 1000;
+// Терминал досылает проходы, которые не успел отдать (агент был выключен или
+// переподключался), — пачкой, по одному в секунду, с настоящим временем
+// прохода. Такое событие старше LATE_MS: дверь по нему не открываем (человек
+// давно прошёл или ушёл), только сообщаем в ADI.
+const LATE_MS = 60 * 1000;
+
+// Время прохода по часам терминала; нет или не разобрать — «сейчас».
+const eventAt = (ev) => {
+  const t = Date.parse(ev.time || "");
+  return Number.isFinite(t) ? t : Date.now();
+};
+const lateLabel = (ev) => {
+  const d = new Date(eventAt(ev) + 5 * 3600e3).toISOString();
+  return ` — проход в ${d.slice(11, 19)}${d.slice(0, 10) === new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 10) ? "" : ` ${d.slice(8, 10)}.${d.slice(5, 7)}`}, терминал дослал позже`;
+};
 
 const COMMANDS = {
   deviceInfo: (t) => t.deviceInfo(),
@@ -103,13 +118,15 @@ class Agent {
   }
 
   // Человек стоит перед камерой — терминал узнаёт его по нескольку раз.
+  // Сравниваем по времени прохода, а не прихода: досланные пачкой проходы
+  // одного человека (утром и днём) приходят с разницей в секунду.
   isRepeat(ev) {
     const key = `${ev.terminalId}:${ev.employeeNo}`;
-    const now = Date.now();
+    const now = eventAt(ev);
     const last = this.recent.get(key);
     this.recent.set(key, now);
     if (this.recent.size > SEEN_MAX) this.recent.delete(this.recent.keys().next().value);
-    return last != null && now - last < this.decision.repeatSeconds * 1000;
+    return last != null && Math.abs(now - last) < this.decision.repeatSeconds * 1000;
   }
 
   async onEvent(ev) {
@@ -126,10 +143,21 @@ class Agent {
       time: ev.time,
     };
     const mode = this.decision.mode;
+    const late = Date.now() - eventAt(ev) > LATE_MS;
 
     if (mode === "terminal") {
-      this.log.info(`${who(ev)}: ${terminalVerdict(ev)}`);
+      this.log.info(`${who(ev)}: ${terminalVerdict(ev)}${late ? lateLabel(ev) : ""}`);
       this.link.report({ kind: ev.minor === FACE_PASS ? "access.passed" : "access.refused", ...person });
+      return;
+    }
+    if (late) {
+      // Агента не было, когда человек стоял у турникета, — дверь он не открывал.
+      this.log.info(`${who(ev)}: ${terminalVerdict(ev)}${lateLabel(ev)}; дверь не открываем`);
+      this.link.report({
+        kind: ev.minor === FACE_PASS ? "access.passed" : "access.offline_denied",
+        ...person,
+        late: true,
+      });
       return;
     }
     if (mode === "local") {

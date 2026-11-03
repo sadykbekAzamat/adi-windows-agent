@@ -332,6 +332,32 @@ test("режимы terminal и local", async () => {
   }
 });
 
+test("досланные терминалом старые проходы: дверь не открываем, повтором не считаем", async () => {
+  const term = createFakeTerminal();
+  const adi = createFakeAdi();
+  const [termPort, adiPort] = [await term.listen(), await adi.listen()];
+  const { agent } = makeAgent({ termPort, adiPort, decision: { mode: "adi", repeatSeconds: 5 } });
+  const local = (msAgo) => `${new Date(Date.now() - msAgo + 5 * 3600e3).toISOString().slice(0, 19)}+05:00`;
+  try {
+    agent.start();
+    assert.ok(await until(() => term.state.streams.size === 1 && agent.link.ready));
+    // Тот же человек утром и днём — пришли подряд, с разницей в миллисекунды.
+    term.emit({ employeeNo: "u7", serialNo: 71, minor: 76, dateTime: local(3 * 3600e3) });
+    term.emit({ employeeNo: "u7", serialNo: 72, minor: 76, dateTime: local(3600e3) });
+    assert.ok(await until(() => adi.state.events.filter((e) => e.employeeNo === "u7").length === 2), "оба прохода дошли до ADI");
+    assert.equal(adi.state.requests.length, 0, "у ADI не спрашивали «пускать?»");
+    assert.equal(term.state.opens.length, 0, "дверь по старому событию не открыта");
+    assert.ok(adi.state.events.every((e) => e.employeeNo !== "u7" || (e.late && e.kind === "access.offline_denied")));
+    // Свежее событие — как обычно.
+    term.emit({ employeeNo: "u7", serialNo: 73, minor: 76 });
+    assert.ok(await until(() => adi.state.requests.length === 1));
+  } finally {
+    agent.stop();
+    await adi.close();
+    await term.close();
+  }
+});
+
 test("команды из ADI: разрешённые выполняются, неизвестные — нет", async () => {
   const term = createFakeTerminal();
   const adi = createFakeAdi();
