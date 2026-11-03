@@ -154,10 +154,13 @@ function createFakeTerminal({ user = "admin", password = "secret" } = {}) {
   }
 
   // Событие прохода — как шлёт терминал: JSON-часть с Content-Length.
-  function eventJson({ employeeNo, name = "Тест", minor = 75, serialNo } = {}) {
+  // Время — сейчас по Алматы, в формате терминала: 2026-11-03T15:04:05+05:00.
+  const almatyNow = () => `${new Date(Date.now() + 5 * 3600e3).toISOString().slice(0, 19)}+05:00`;
+
+  function eventJson({ employeeNo, name = "Тест", minor = 75, serialNo, dateTime } = {}) {
     return JSON.stringify({
       ipAddress: "192.168.0.90",
-      dateTime: "2026-11-02T10:00:00+05:00",
+      dateTime: dateTime || almatyNow(),
       activePostCount: 1,
       eventType: "AccessControllerEvent",
       eventState: "active",
