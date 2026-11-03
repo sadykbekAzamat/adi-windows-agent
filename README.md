@@ -178,8 +178,9 @@ JSON-сообщения по WebSocket `adi.url` (по умолчанию `wss:/
 | `userCount` | — |
 | `userGet` | `{employeeNo}` |
 | `userUpsert` | `{employeeNo, name, validFrom, validTo, planTemplate?}` |
-| `userAdd` | `{employeeNo, name, valid}` — новый человек; занятый номер → ошибка `employeeNoAlreadyExist`, чужая запись не перезаписывается (с 0.2.0) |
-| `userSetValid` | `{items: [{employeeNo, valid}]}` (до 50) → `[{employeeNo, ok, code?, error?}]` — только срок входа, имя и права не трогает (с 0.2.0) |
+| `userAdd` | `{employeeNo, name, valid, plan?}` — новый человек; занятый номер → ошибка `employeeNoAlreadyExist`, чужая запись не перезаписывается (с 0.2.0, `plan` — с 0.3.0) |
+| `userSetValid` | `{items: [{employeeNo, valid, plan?}]}` (до 50) → `[{employeeNo, ok, prevPlan?, code?, error?}]` — срок входа и, если передан `plan`, номер шаблона расписания; имя не трогает (с 0.2.0, `plan` — с 0.3.0) |
+| `planSet` | `{no, name, days}` — расписание входа: недельный план `no` и шаблон прав `no` с именем `ADI-…`; `days = {mon: [[с, по]], …}` — минуты от полуночи, «по» включительно, до 8 отрезков в день. Шаблон клуба (включён, имя не `ADI…`) → ошибка `occupied` (с 0.3.0) |
 | `userDelete` | `{employeeNos}` |
 | `faceUpload` | `{employeeNo, imageBase64}` |
 | `faceDelete` | `{employeeNo}` |

@@ -30,6 +30,7 @@ const COMMANDS = {
   userUpsert: (t, a) => t.userUpsert(a),
   userAdd: (t, a) => t.userAdd(a),
   userSetValid: (t, a) => t.userSetValid(a.items),
+  planSet: (t, a) => t.planSet(a),
   userDelete: (t, a) => t.userDelete(a.employeeNos ?? a.employeeNo),
   faceUpload: (t, a) => t.faceUpload(a.employeeNo, Buffer.from(String(a.imageBase64 || ""), "base64")),
   faceDelete: (t, a) => t.faceDelete(a.employeeNo),

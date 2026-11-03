@@ -115,6 +115,23 @@ function createFakeTerminal({ user = "admin", password = "secret", strictNonce =
       state.modifies = (state.modifies || 0) + 1;
       return send(res, 200, jsonOk, "application/json");
     }
+    let m;
+    if ((m = /^\/ISAPI\/AccessControl\/UserRightPlanTemplate\/(\d+)$/.exec(p))) {
+      state.plans ||= new Map();
+      if (req.method === "GET")
+        return send(res, 200, JSON.stringify({ UserRightPlanTemplate: state.plans.get(m[1]) || { enable: false, templateName: "", weekPlanNo: 0 } }), "application/json");
+      if (req.method === "PUT") {
+        state.plans.set(m[1], JSON.parse(text).UserRightPlanTemplate);
+        return send(res, 200, jsonOk, "application/json");
+      }
+    }
+    if ((m = /^\/ISAPI\/AccessControl\/UserRightWeekPlanCfg\/(\d+)$/.exec(p)) && req.method === "PUT") {
+      state.weekPlans ||= new Map();
+      const cfg = JSON.parse(text).UserRightWeekPlanCfg;
+      if (!Array.isArray(cfg.WeekPlanCfg) || cfg.WeekPlanCfg.length !== 56) return send(res, 200, jsonErr("badJsonContent"), "application/json");
+      state.weekPlans.set(m[1], cfg);
+      return send(res, 200, jsonOk, "application/json");
+    }
     if (req.method === "PUT" && p === "/ISAPI/AccessControl/UserInfo/Delete") {
       for (const e of JSON.parse(text).UserInfoDelCond.EmployeeNoList) {
         state.users.delete(e.employeeNo);

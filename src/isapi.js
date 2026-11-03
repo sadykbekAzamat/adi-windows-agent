@@ -83,6 +83,39 @@ function validOf(state) {
   return { enable: true, beginTime: m[1], endTime: m[2], timeType: "local" };
 }
 
+/*
+ * Расписание входа (часы абонемента): days = { mon: [[с, по]], … } — минуты от
+ * полуночи, «по» включительно (до 13:00 — значит до 13:00:59), до 8 отрезков в
+ * день. Пустой день — вход закрыт.
+ */
+const WEEK = { mon: "Monday", tue: "Tuesday", wed: "Wednesday", thu: "Thursday", fri: "Friday", sat: "Saturday", sun: "Sunday" };
+const two = (n) => String(n).padStart(2, "0");
+const clock = (min, end) => `${two(Math.floor(min / 60))}:${two(min % 60)}:${end ? "59" : "00"}`;
+function weekPlanOf(days) {
+  const out = [];
+  for (const [key, week] of Object.entries(WEEK)) {
+    const segs = Array.isArray(days?.[key]) ? days[key] : [];
+    if (segs.length > 8) throw new Error(`Расписание: в ${week} больше 8 отрезков`);
+    for (const seg of segs) {
+      const [s, e] = seg || [];
+      if (!Number.isInteger(s) || !Number.isInteger(e) || s < 0 || e > 1439 || s > e)
+        throw new Error(`Расписание: неверный отрезок ${JSON.stringify(seg)}`);
+    }
+    for (let id = 1; id <= 8; id += 1) {
+      const seg = segs[id - 1];
+      out.push({
+        week,
+        id,
+        enable: Boolean(seg),
+        TimeSegment: seg
+          ? { beginTime: clock(seg[0]), endTime: clock(seg[1], true) }
+          : { beginTime: "00:00:00", endTime: "00:00:00" },
+      });
+    }
+  }
+  return out;
+}
+
 function checkEmployeeNo(v) {
   const s = String(v ?? "");
   if (!EMPLOYEE_RE.test(s)) throw new Error("employeeNo: латиница, цифры, _ и -, до 32 символов");
@@ -179,14 +212,14 @@ class Terminal {
    * завели в меню терминала), терминал откажет employeeNoAlreadyExist, а не
    * перезапишет чужую запись. ADI тогда берёт следующий номер.
    */
-  async userAdd({ employeeNo, name, valid }) {
+  async userAdd({ employeeNo, name, valid, plan = "1" }) {
     const UserInfo = {
       employeeNo: checkEmployeeNo(employeeNo),
       name: String(name || "").trim().slice(0, 32) || String(employeeNo),
       userType: "normal",
       Valid: validOf(valid),
       doorRight: String(this.door),
-      RightPlan: [{ doorNo: this.door, planTemplateNo: "1" }],
+      RightPlan: [{ doorNo: this.door, planTemplateNo: String(plan) }],
     };
     const res = await this.req("POST", "/ISAPI/AccessControl/UserInfo/Record?format=json", {
       body: JSON.stringify({ UserInfo }),
@@ -197,10 +230,10 @@ class Terminal {
   }
 
   /*
-   * Поменять только срок доступа. Имя, права и расписание человека не
-   * трогаем: Modify меняет переданные поля, а имя и тип берём из самой записи
-   * (без них прошивки отвечают «не хватает параметров»).
-   * items: [{ employeeNo, valid }] → [{ employeeNo, ok, error? }]
+   * Поменять срок доступа и, если передан plan, расписание (номер шаблона).
+   * Имя и остальное не трогаем: Modify меняет переданные поля, а имя и тип
+   * берём из самой записи (без них прошивки отвечают «не хватает параметров»).
+   * items: [{ employeeNo, valid, plan? }] → [{ employeeNo, ok, prevPlan?, error? }]
    */
   async userSetValid(items) {
     const list = (Array.isArray(items) ? items : []).slice(0, 50);
@@ -217,20 +250,60 @@ class Terminal {
         const UserInfo = { employeeNo, name: u.name || employeeNo, userType: u.userType || "normal", Valid };
         if (u.doorRight) UserInfo.doorRight = u.doorRight;
         if (Array.isArray(u.RightPlan)) UserInfo.RightPlan = u.RightPlan;
+        const prev = (u.RightPlan || []).find((r) => Number(r.doorNo) === Number(this.door));
+        if (it.plan != null) {
+          if (!/^\d{1,3}$/.test(String(it.plan))) throw new Error(`Расписание «${it.plan}»: нужен номер шаблона`);
+          UserInfo.doorRight = String(this.door);
+          UserInfo.RightPlan = [{ doorNo: this.door, planTemplateNo: String(it.plan) }];
+        }
         const res = await this.req("PUT", "/ISAPI/AccessControl/UserInfo/Modify?format=json", {
           body: JSON.stringify({ UserInfo }),
           contentType: "application/json",
         });
         ensureOk(res, "Срок доступа");
-        out.push({ employeeNo, ok: true });
+        out.push({ employeeNo, ok: true, prevPlan: prev?.planTemplateNo != null ? String(prev.planTemplateNo) : null });
       } catch (err) {
         // Блокировка входа или нет связи — дальше по списку идти бессмысленно.
-        if (err.name === "BlockedError" || err.name === "AuthError" || !(err instanceof IsapiError || /Срок|employeeNo/.test(err.message)))
+        if (err.name === "BlockedError" || err.name === "AuthError" || !(err instanceof IsapiError || /Срок|Расписание|employeeNo/.test(err.message)))
           throw err;
         out.push({ employeeNo: String(it.employeeNo), ok: false, code: err.subStatusCode || null, error: err.message });
       }
     }
     return out;
+  }
+
+  /*
+   * Завести расписание: недельный план N и шаблон прав N с именем «ADI-…».
+   * Шаблон, который завёл клуб (включён и имя не «ADI…»), не перезаписываем —
+   * ошибка с кодом occupied, ADI возьмёт следующий номер.
+   */
+  async planSet({ no, name, days }) {
+    const n = Number(no);
+    if (!Number.isInteger(n) || n < 2 || n > 255) throw new Error("Номер расписания: от 2 до 255");
+    const title = String(name || "");
+    if (!/^ADI/.test(title)) throw new Error("Имя расписания должно начинаться с ADI");
+    const WeekPlanCfg = weekPlanOf(days);
+    const cur = await this.req("GET", `/ISAPI/AccessControl/UserRightPlanTemplate/${n}?format=json`);
+    const t = cur.status === 200 ? statusOf(cur).json?.UserRightPlanTemplate : null;
+    if (t && t.enable && t.templateName && !/^ADI/.test(t.templateName))
+      throw new IsapiError(`Шаблон ${n} в терминале занят («${t.templateName}»)`, { subStatusCode: "occupied" });
+    ensureOk(
+      await this.req("PUT", `/ISAPI/AccessControl/UserRightWeekPlanCfg/${n}?format=json`, {
+        body: JSON.stringify({ UserRightWeekPlanCfg: { enable: true, WeekPlanCfg } }),
+        contentType: "application/json",
+      }),
+      "Недельный план",
+    );
+    ensureOk(
+      await this.req("PUT", `/ISAPI/AccessControl/UserRightPlanTemplate/${n}?format=json`, {
+        body: JSON.stringify({
+          UserRightPlanTemplate: { enable: true, templateName: title.slice(0, 32), weekPlanNo: n, holidayGroupNo: "" },
+        }),
+        contentType: "application/json",
+      }),
+      "Шаблон расписания",
+    );
+    return { ok: true, no: n };
   }
 
   async userRecord(employeeNo) {

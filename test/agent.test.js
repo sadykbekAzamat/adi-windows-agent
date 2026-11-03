@@ -150,6 +150,37 @@ test("новый человек из ADI и срок доступа: занят�
   }
 });
 
+test("расписание входа: недельный план + шаблон «ADI-…», шаблон клуба не трогаем, человеку назначается", async () => {
+  const term = createFakeTerminal();
+  const port = await term.listen();
+  try {
+    const t = new Terminal({ id: "e", host: "127.0.0.1", port, user: "admin", password: "secret" });
+    term.state.plans = new Map([["2", { enable: true, templateName: "Утро клуба", weekPlanNo: 2 }]]);
+    const days = { mon: [[420, 780]], tue: [[420, 780]], wed: [], thu: [], fri: [], sat: [[0, 120], [1320, 1439]], sun: [] };
+    await assert.rejects(() => t.planSet({ no: 2, name: "ADI-x", days }), (e) => e.subStatusCode === "occupied");
+    assert.equal(term.state.plans.get("2").templateName, "Утро клуба");
+    await t.planSet({ no: 3, name: "ADI-abc", days });
+    const wp = term.state.weekPlans.get("3").WeekPlanCfg;
+    const mon1 = wp.find((x) => x.week === "Monday" && x.id === 1);
+    assert.deepEqual(mon1, { week: "Monday", id: 1, enable: true, TimeSegment: { beginTime: "07:00:00", endTime: "13:00:59" } });
+    assert.equal(wp.filter((x) => x.week === "Saturday" && x.enable).length, 2);
+    assert.equal(wp.filter((x) => x.week === "Wednesday" && x.enable).length, 0, "пустой день — закрыт");
+    assert.deepEqual(term.state.plans.get("3"), { enable: true, templateName: "ADI-abc", weekPlanNo: 3, holidayGroupNo: "" });
+    await t.planSet({ no: 3, name: "ADI-abc", days }); // своё можно перезаписать
+    await assert.rejects(() => t.planSet({ no: 4, name: "Чужое", days }));
+    await assert.rejects(() => t.planSet({ no: 4, name: "ADI-bad", days: { mon: [[800, 700]] } }));
+
+    await t.userAdd({ employeeNo: "A5", name: "Утренний", valid: "closed", plan: "3" });
+    assert.equal(term.state.users.get("A5").RightPlan[0].planTemplateNo, "3");
+    const r = await t.userSetValid([{ employeeNo: "A5", valid: "free", plan: "1" }, { employeeNo: "A5", valid: "closed" }]);
+    assert.equal(r[0].ok && r[0].prevPlan, "3");
+    assert.equal(r[1].prevPlan, "1", "без plan расписание не меняется");
+    assert.equal(term.state.users.get("A5").RightPlan[0].planTemplateNo, "1");
+  } finally {
+    await term.close();
+  }
+});
+
 test("люди и лица: добавить, найти, заменить фото, снять фото, удалить", async () => {
   const term = createFakeTerminal();
   const port = await term.listen();
