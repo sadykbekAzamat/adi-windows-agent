@@ -65,6 +65,24 @@ function localTime(v, fallback) {
   throw new Error(`Время «${s}»: нужен формат ГГГГ-ММ-ДД или ГГГГ-ММ-ДДTчч:мм:сс`);
 }
 
+/*
+ * Срок доступа человека в терминале — состояние, которое держит ADI:
+ *   open|с|по — пускать с … по … (местное время терминала);
+ *   closed    — не пускать: окно в прошлом, терминал узнаёт лицо и пишет
+ *               «срок истёк»;
+ *   free      — без срока, как было в терминале до ADI.
+ */
+const LOCAL_RE = "\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}";
+const OPEN_RE = new RegExp(`^open\\|(${LOCAL_RE})\\|(${LOCAL_RE})$`);
+function validOf(state) {
+  const s = String(state || "");
+  if (s === "closed") return { enable: true, beginTime: "2020-01-01T00:00:00", endTime: "2020-01-01T00:00:01", timeType: "local" };
+  if (s === "free") return { enable: false, beginTime: "2020-01-01T00:00:00", endTime: "2037-12-31T23:59:59", timeType: "local" };
+  const m = OPEN_RE.exec(s);
+  if (!m || m[1] > m[2]) throw new Error(`Срок «${s}»: нужно closed, free или open|с|по`);
+  return { enable: true, beginTime: m[1], endTime: m[2], timeType: "local" };
+}
+
 function checkEmployeeNo(v) {
   const s = String(v ?? "");
   if (!EMPLOYEE_RE.test(s)) throw new Error("employeeNo: латиница, цифры, _ и -, до 32 символов");
@@ -154,6 +172,81 @@ class Terminal {
     });
     ensureOk(res, "Человек");
     return { ok: true, employeeNo: UserInfo.employeeNo };
+  }
+
+  /*
+   * Новый человек из ADI. Record, а не SetUp: если номер уже занят (человека
+   * завели в меню терминала), терминал откажет employeeNoAlreadyExist, а не
+   * перезапишет чужую запись. ADI тогда берёт следующий номер.
+   */
+  async userAdd({ employeeNo, name, valid }) {
+    const UserInfo = {
+      employeeNo: checkEmployeeNo(employeeNo),
+      name: String(name || "").trim().slice(0, 32) || String(employeeNo),
+      userType: "normal",
+      Valid: validOf(valid),
+      doorRight: String(this.door),
+      RightPlan: [{ doorNo: this.door, planTemplateNo: "1" }],
+    };
+    const res = await this.req("POST", "/ISAPI/AccessControl/UserInfo/Record?format=json", {
+      body: JSON.stringify({ UserInfo }),
+      contentType: "application/json",
+    });
+    ensureOk(res, "Новый человек");
+    return { ok: true, employeeNo: UserInfo.employeeNo };
+  }
+
+  /*
+   * Поменять только срок доступа. Имя, права и расписание человека не
+   * трогаем: Modify меняет переданные поля, а имя и тип берём из самой записи
+   * (без них прошивки отвечают «не хватает параметров»).
+   * items: [{ employeeNo, valid }] → [{ employeeNo, ok, error? }]
+   */
+  async userSetValid(items) {
+    const list = (Array.isArray(items) ? items : []).slice(0, 50);
+    const out = [];
+    for (const it of list) {
+      try {
+        const employeeNo = checkEmployeeNo(it.employeeNo);
+        const Valid = validOf(it.valid);
+        const u = await this.userRecord(employeeNo);
+        if (!u) {
+          out.push({ employeeNo, ok: false, code: "notFound", error: "Нет на терминале" });
+          continue;
+        }
+        const UserInfo = { employeeNo, name: u.name || employeeNo, userType: u.userType || "normal", Valid };
+        if (u.doorRight) UserInfo.doorRight = u.doorRight;
+        if (Array.isArray(u.RightPlan)) UserInfo.RightPlan = u.RightPlan;
+        const res = await this.req("PUT", "/ISAPI/AccessControl/UserInfo/Modify?format=json", {
+          body: JSON.stringify({ UserInfo }),
+          contentType: "application/json",
+        });
+        ensureOk(res, "Срок доступа");
+        out.push({ employeeNo, ok: true });
+      } catch (err) {
+        // Блокировка входа или нет связи — дальше по списку идти бессмысленно.
+        if (err.name === "BlockedError" || err.name === "AuthError" || !(err instanceof IsapiError || /Срок|employeeNo/.test(err.message)))
+          throw err;
+        out.push({ employeeNo: String(it.employeeNo), ok: false, code: err.subStatusCode || null, error: err.message });
+      }
+    }
+    return out;
+  }
+
+  async userRecord(employeeNo) {
+    const res = await this.req("POST", "/ISAPI/AccessControl/UserInfo/Search?format=json", {
+      body: JSON.stringify({
+        UserInfoSearchCond: {
+          searchID: crypto.randomUUID(),
+          searchResultPosition: 0,
+          maxResults: 1,
+          EmployeeNoList: [{ employeeNo: checkEmployeeNo(employeeNo) }],
+        },
+      }),
+      contentType: "application/json",
+    });
+    const s = ensureOk(res, "Поиск человека");
+    return s.json?.UserInfoSearch?.UserInfo?.[0] || null;
   }
 
   async userGet(employeeNo) {
@@ -411,4 +504,4 @@ function normalizeEvent(payload, terminalId) {
   return { terminalId, ...e, employeeNo: e.employeeNo || null };
 }
 
-module.exports = { Terminal, IsapiError, normalizeEvent, FACE_PASS, FACE_FAIL, DOOR_COMMANDS };
+module.exports = { Terminal, IsapiError, normalizeEvent, validOf, FACE_PASS, FACE_FAIL, DOOR_COMMANDS };

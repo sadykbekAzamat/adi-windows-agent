@@ -119,6 +119,37 @@ test("дверь: команда уходит XML (как принимает V3.
   }
 });
 
+test("новый человек из ADI и срок доступа: занятый номер не перезаписывается, Modify меняет только срок", async () => {
+  const term = createFakeTerminal();
+  const port = await term.listen();
+  try {
+    const t = new Terminal({ id: "e", host: "127.0.0.1", port, user: "admin", password: "secret" });
+    // Человек, заведённый в меню терминала, со своим расписанием.
+    term.state.users.set("A1001", { employeeNo: "A1001", name: "Старый", userType: "normal", doorRight: "1", RightPlan: [{ doorNo: 1, planTemplateNo: "3" }], Valid: { enable: false } });
+    await assert.rejects(() => t.userAdd({ employeeNo: "A1001", name: "Новый", valid: "closed" }), (e) => e.subStatusCode === "employeeNoAlreadyExist");
+    assert.equal(term.state.users.get("A1001").name, "Старый", "чужая запись не перезаписана");
+
+    await t.userAdd({ employeeNo: "A1002", name: "Иванов Иван", valid: "open|2026-11-01T00:00:00|2026-12-01T23:59:59" });
+    assert.deepEqual(term.state.users.get("A1002").Valid, { enable: true, beginTime: "2026-11-01T00:00:00", endTime: "2026-12-01T23:59:59", timeType: "local" });
+
+    const r = await t.userSetValid([
+      { employeeNo: "A1001", valid: "closed" },
+      { employeeNo: "A1002", valid: "free" },
+      { employeeNo: "404", valid: "closed" },
+      { employeeNo: "A1002", valid: "open|2026-12-01T00:00:00|2026-11-01T00:00:00" },
+    ]);
+    assert.deepEqual(r.map((x) => x.ok), [true, true, false, false]);
+    assert.equal(r[2].code, "notFound");
+    const old = term.state.users.get("A1001");
+    assert.equal(old.name, "Старый");
+    assert.equal(old.RightPlan[0].planTemplateNo, "3", "расписание не тронуто");
+    assert.equal(old.Valid.endTime, "2020-01-01T00:00:01");
+    assert.equal(term.state.users.get("A1002").Valid.enable, false);
+  } finally {
+    await term.close();
+  }
+});
+
 test("люди и лица: добавить, найти, заменить фото, снять фото, удалить", async () => {
   const term = createFakeTerminal();
   const port = await term.listen();

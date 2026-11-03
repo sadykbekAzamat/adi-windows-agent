@@ -178,12 +178,18 @@ JSON-сообщения по WebSocket `adi.url` (по умолчанию `wss:/
 | `userCount` | — |
 | `userGet` | `{employeeNo}` |
 | `userUpsert` | `{employeeNo, name, validFrom, validTo, planTemplate?}` |
+| `userAdd` | `{employeeNo, name, valid}` — новый человек; занятый номер → ошибка `employeeNoAlreadyExist`, чужая запись не перезаписывается (с 0.2.0) |
+| `userSetValid` | `{items: [{employeeNo, valid}]}` (до 50) → `[{employeeNo, ok, code?, error?}]` — только срок входа, имя и права не трогает (с 0.2.0) |
 | `userDelete` | `{employeeNos}` |
 | `faceUpload` | `{employeeNo, imageBase64}` |
 | `faceDelete` | `{employeeNo}` |
 | `faceCapture` | `{timeoutMs?}` → `{imageBase64}` |
 
-`employeeNo` — номер человека в терминале (до 32 символов). У людей, внесённых в терминал до ADI, номера свои (например, `135`). Поэтому ADI хранит соответствие «номер в терминале → клиент ADI» и не считает `employeeNo` id пользователя. Новым людям ADI даёт номер сам.
+`employeeNo` — номер человека в терминале (до 32 символов). У людей, внесённых в терминал до ADI, номера свои (например, `135`). Поэтому ADI хранит соответствие «номер в терминале → клиент ADI» и не считает `employeeNo` id пользователя. Новым людям ADI даёт номер сам: `A1001`, `A1002`… — с буквой, чтобы не пересекаться с числами из меню терминала.
+
+`valid` — срок входа, который держит ADI: `open|ГГГГ-ММ-ДДTчч:мм:сс|ГГГГ-ММ-ДДTчч:мм:сс` (пускать с … по …, местное время), `closed` (не пускать: окно в прошлом, терминал узнаёт лицо и отказывает), `free` (без срока, как было до ADI).
+
+Если ADI прислал команду, которой агент не знает, он отвечает `unknown_command` — кабинет покажет «обновите агент».
 
 **Привязка:** `POST {base}/api/gate/agent/pair` с телом `{code, hostname, version}` → `{token, wsUrl?, companyName?}`.
 

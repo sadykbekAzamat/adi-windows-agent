@@ -100,6 +100,21 @@ function createFakeTerminal({ user = "admin", password = "secret", strictNonce =
       state.users.set(u.employeeNo, u);
       return send(res, 200, jsonOk, "application/json");
     }
+    if (req.method === "POST" && p === "/ISAPI/AccessControl/UserInfo/Record") {
+      const u = JSON.parse(text).UserInfo;
+      if (state.users.has(u.employeeNo)) return send(res, 200, jsonErr("employeeNoAlreadyExist"), "application/json");
+      state.users.set(u.employeeNo, u);
+      return send(res, 200, jsonOk, "application/json");
+    }
+    if (req.method === "PUT" && p === "/ISAPI/AccessControl/UserInfo/Modify") {
+      const u = JSON.parse(text).UserInfo;
+      const old = state.users.get(u.employeeNo);
+      if (!old) return send(res, 200, jsonErr("employeeNoNotExist"), "application/json");
+      if (!u.name || !u.userType) return send(res, 200, jsonErr("MessageParametersLack"), "application/json");
+      state.users.set(u.employeeNo, { ...old, ...u });
+      state.modifies = (state.modifies || 0) + 1;
+      return send(res, 200, jsonOk, "application/json");
+    }
     if (req.method === "PUT" && p === "/ISAPI/AccessControl/UserInfo/Delete") {
       for (const e of JSON.parse(text).UserInfoDelCond.EmployeeNoList) {
         state.users.delete(e.employeeNo);
@@ -140,8 +155,10 @@ function createFakeTerminal({ user = "admin", password = "secret", strictNonce =
       const xml = Buffer.from("<CaptureFaceData><captureProgress>100</captureProgress></CaptureFaceData>");
       res.write(`--${b}\r\nContent-Type: application/xml\r\nContent-Length: ${xml.length}\r\n\r\n`);
       res.write(xml);
-      res.write(`\r\n--${b}\r\nContent-Type: image/jpeg\r\nContent-Length: ${JPEG.length}\r\n\r\n`);
-      res.write(JPEG);
+      // state.captureJpeg — настоящая картинка для проверки кабинета в браузере.
+      const img = state.captureJpeg || JPEG;
+      res.write(`\r\n--${b}\r\nContent-Type: image/jpeg\r\nContent-Length: ${img.length}\r\n\r\n`);
+      res.write(img);
       return res.end(`\r\n--${b}--\r\n`);
     }
     if (req.method === "GET" && p === "/ISAPI/Event/notification/alertStream") {
